@@ -16,7 +16,8 @@ struct CourseListView: View {
                     NavigationLink(destination: CourseDetailView(course: c)) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(c.name).font(.headline)
-                            Text("学生 \(c.studentCount) 人 · 创建于 \(c.createdAt.formatted(date: .abbreviated, time: .omitted))")
+                            // v6.7.30：总人数 = 已提取人脸特征的人数（名册里没提取出特征的不计入）
+                            Text("学生 \(c.featureCount) 人 · 创建于 \(c.createdAt.formatted(date: .abbreviated, time: .omitted))")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -61,6 +62,7 @@ struct CourseDetailView: View {
     @State private var showAttendance = false
     @State private var showPhotoAttendance = false
     @State private var showRandomPick = false
+    @State private var showRandomNumber = false
     @State private var showPersonalSignIn = false
     @State private var showHistory = false
 
@@ -70,7 +72,8 @@ struct CourseDetailView: View {
                 if students.isEmpty {
                     Text("尚未导入花名册").foregroundStyle(.secondary)
                 } else {
-                    Text("共 \(students.count) 人，\(featureCount) 人已提取人脸特征")
+                    // v6.7.30：总人数 = 已提取人脸特征的人数
+                    Text("共 \(featureCount) 人")
                 }
                 // v6.7.14：构建戳常驻花名册页——任何截图自带版本，便于核对构建
                 Text("构建 \(Thresholds.buildVersion)")
@@ -107,10 +110,18 @@ struct CourseDetailView: View {
                 Button {
                     showPersonalSignIn = true
                 } label: {
-                    Label("个人签到（前置摄像头，逐个确认）", systemImage: "person.crop.rectangle.badge.plus")
+                    // v6.7.30：入口改名——功能不变（前置相机逐个识别人脸签到）
+                        Label("人脸识别签到", systemImage: "person.crop.rectangle.badge.plus")
                         .font(.headline)
                 }
                 .disabled(featureCount == 0)
+                if featureCount == 0 {
+                    Text("请先导入花名册并提取人脸特征").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            // v6.7.30：随机点名 + 随机数生成并为一组"课堂随机工具"
+            Section {
                 Button {
                     showRandomPick = true
                 } label: {
@@ -118,8 +129,11 @@ struct CourseDetailView: View {
                         .font(.headline)
                 }
                 .disabled(featureCount == 0)
-                if featureCount == 0 {
-                    Text("请先导入花名册并提取人脸特征").font(.caption).foregroundStyle(.secondary)
+                Button {
+                    showRandomNumber = true
+                } label: {
+                    Label("随机数生成（输入 n，均匀抽取 1 ~ n）", systemImage: "dice")
+                        .font(.headline)
                 }
             }
 
@@ -142,6 +156,9 @@ struct CourseDetailView: View {
         }
         .sheet(isPresented: $showRandomPick) {
             RandomPickView(course: course, students: students)
+        }
+        .sheet(isPresented: $showRandomNumber) {
+            RandomNumberView(course: course)
         }
         .sheet(isPresented: $showPersonalSignIn) {
             PersonalSignInListView(course: course, students: students)
@@ -226,6 +243,17 @@ struct CourseDetailView: View {
                 // v6.7.1：记录特征管线版本戳——对齐块方向 v6.7 起翻转，
                 // 旧管线特征与新探针余弦≈0（实测 0.008），必然全红；
                 // 照片签到会校验此戳，不匹配时显著提示重导
+                // v6.7.30：全量替换语义——本次名册里没有的学号从库中移除
+                //（名册删了人重导后总人数不再停在旧人数）；空名册不触发删除，
+                // 防止误传空表把整班清掉
+                var removedStale: [String] = []
+                if total > 0 {
+                    removedStale = Database.shared.deleteStudentsNotIn(
+                        courseId: course.id, keepIds: Set(entries.map { $0.studentId }))
+                    if !removedStale.isEmpty {
+                        print("[导入] 移除旧名单残留 \(removedStale.count) 人：\(removedStale.joined(separator: "、"))")
+                    }
+                }
                 UserDefaults.standard.set(Thresholds.featurePipelineVersion,
                                           forKey: "featurePipelineVersion")
                 print("[导入-v6.7.5] 特征管线=\(Thresholds.featurePipelineVersion) 已重建 \(ok)/\(total) 人")
@@ -253,6 +281,7 @@ struct CourseDetailView: View {
                     importProgress = "导入完成：\(ok)/\(total) 人成功（构建 \(Thresholds.buildVersion) · 特征管线 \(Thresholds.featurePipelineVersion)）"
                         + (failed.isEmpty ? "" : "；未检出人脸：\(failed.prefix(5).joined(separator: "、"))")
                         + (failed.count > 5 ? " 等\(failed.count)人" : "")
+                        + (removedStale.isEmpty ? "" : "；已移除旧名单多出的 \(removedStale.count) 人")
                     // 有失败时展示具体原因（含该照片当时的画布/张量/最高分诊断，
                     // Xcode 控制台有逐人完整 [导入失败] 日志）
                     if !failedDetail.isEmpty {
@@ -308,7 +337,7 @@ struct HistoryView: View {
                     Section("签到场次") {
                         ForEach(sessions, id: \.url) { s in
                             NavigationLink {
-                                SessionFolderView(url: s.url)
+                                SessionFolderView(course: course, url: s.url)
                             } label: {
                                 Label("\(s.url.lastPathComponent)（\(s.count) 个文件）",
                                       systemImage: "folder.fill")
@@ -326,7 +355,7 @@ struct HistoryView: View {
                     Section("其他文件（旧版结构）") {
                         ForEach(looseFiles, id: \.self) { url in
                             FileRow(url: url, previewFile: $previewFile,
-                                    shareFile: $shareFile)
+                                    shareFile: $shareFile, course: course)
                         }
                         .onDelete { idx in
                             for i in idx {
@@ -394,15 +423,26 @@ struct HistoryView: View {
 /// v6.7.12：单场签到的全部文件（考勤表/标注图/原图/诊断图），
 /// 点文件名预览、点图标分享、左滑删除单个文件
 struct SessionFolderView: View {
+    let course: Course
     let url: URL
     @State private var files: [URL] = []
     @State private var shareFile: ShareableFile?
     @State private var previewFile: ShareableFile?
+    // v6.9.0：手动补签——选中的考勤表 + 多场选择/无表提示
+    @State private var makeupFile: ShareableFile?
+    @State private var pickMakeup = false
+    @State private var noSheetAlert = false
+
+    private var xlsxFiles: [URL] {
+        files.filter { $0.pathExtension.lowercased() == "xlsx" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
 
     var body: some View {
         List {
             ForEach(files, id: \.self) { f in
-                FileRow(url: f, previewFile: $previewFile, shareFile: $shareFile)
+                FileRow(url: f, previewFile: $previewFile, shareFile: $shareFile,
+                        course: course)
             }
             .onDelete { idx in
                 for i in idx { try? FileManager.default.removeItem(at: files[i]) }
@@ -411,7 +451,37 @@ struct SessionFolderView: View {
         }
         .navigationTitle(url.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // v6.9.0：进场次后右上角「手动补签」，对这场 xlsx 补签（写回同一份表）
+            Button {
+                let xs = xlsxFiles
+                if xs.count == 1 {
+                    makeupFile = ShareableFile(url: xs[0])
+                } else if xs.count > 1 {
+                    pickMakeup = true
+                } else {
+                    noSheetAlert = true
+                }
+            } label: {
+                Label("手动补签", systemImage: "person.crop.circle.badge.plus")
+            }
+        }
         .onAppear(perform: load)
+        .confirmationDialog("选择要补签的考勤表", isPresented: $pickMakeup,
+                            titleVisibility: .visible) {
+            ForEach(xlsxFiles, id: \.self) { f in
+                Button(f.lastPathComponent) { makeupFile = ShareableFile(url: f) }
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .alert("本场次没有 Excel 考勤表", isPresented: $noSheetAlert) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("补签针对的是相机扫描/照片签到生成的 xlsx 考勤表")
+        }
+        .sheet(item: $makeupFile) { file in
+            MakeupSignView(course: course, fileURL: file.url)
+        }
         .sheet(item: $previewFile) { file in
             NavigationStack {
                 QuickLookPreview(url: file.url)
@@ -432,11 +502,14 @@ struct SessionFolderView: View {
     }
 }
 
-/// 文件行：点名字预览，点图标分享（历史记录与场次文件夹共用）
+/// 文件行：点名字预览，点图标分享（历史记录与场次文件夹共用）。
+/// v6.9.0：course 非空且是 xlsx 时，多出「手动补签」入口（写回同一份表）
 struct FileRow: View {
     let url: URL
     @Binding var previewFile: ShareableFile?
     @Binding var shareFile: ShareableFile?
+    var course: Course? = nil
+    @State private var showMakeup = false
 
     var body: some View {
         HStack {
@@ -445,11 +518,24 @@ struct FileRow: View {
                     .foregroundStyle(.primary)
             }
             Spacer()
+            if let course, url.pathExtension.lowercased() == "xlsx" {
+                Button { showMakeup = true } label: {
+                    Image(systemName: "pencil.and.list.clipboard")
+                        .foregroundStyle(.green)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("手动补签")
+            }
             Button { shareFile = ShareableFile(url: url) } label: {
                 Image(systemName: "square.and.arrow.up")
                     .foregroundStyle(.tint)
             }
             .buttonStyle(.borderless)
+        }
+        .sheet(isPresented: $showMakeup) {
+            if let course {
+                MakeupSignView(course: course, fileURL: url)
+            }
         }
     }
 

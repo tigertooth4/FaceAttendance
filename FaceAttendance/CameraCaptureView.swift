@@ -1,11 +1,11 @@
 import SwiftUI
 import AVFoundation
-import Photos
 import Combine   // ObservableObject/@Published/@StateObject 的定义模块
 
 /// v6.7.15：照片签到内置连拍相机。
-/// 连续拍摄多张班级照片 → 每张实时写入系统相册（方便日后二次提取）→
-/// 点「开始签到」把整组照片交给照片签到管线（与相册选片走同一 recognizeAll）。
+/// v6.7.31：拍的照片【不再写入系统相册】——只保存在内存里，点「开始签到」后
+/// 由照片签到管线把原图/标注图收进本场次文件夹（历史记录里可导出/分享），
+/// 不污染手机照片库；返回或「重拍」即丢弃本组照片。
 /// 左上角「<」返回即放弃本组照片（=重新拍照），点「重拍」可不清场退回。
 struct CameraCaptureView: View {
     /// 点「开始签到」时回调：整组照片（含 EXIF 的原始数据 + 拍摄时刻）
@@ -224,7 +224,7 @@ final class CameraCaptureModel: NSObject, ObservableObject, AVCapturePhotoCaptur
                   self.session.canAddInput(input),
                   self.session.canAddOutput(self.photoOutput) else {
                 self.session.commitConfiguration()
-                print("[拍照-v6.7.24] 相机配置失败")
+                print("[拍照-v6.7.31] 相机配置失败")
                 return
             }
             self.session.addInput(input)
@@ -236,7 +236,7 @@ final class CameraCaptureModel: NSObject, ObservableObject, AVCapturePhotoCaptur
             // calls to beginConfiguration and commitConfiguration）
             self.session.commitConfiguration()
             self.session.startRunning()
-            print("[拍照-v6.7.24] 连拍相机已启动")
+            print("[拍照-v6.7.31] 连拍相机已启动")
         }
     }
 
@@ -308,7 +308,7 @@ final class CameraCaptureModel: NSObject, ObservableObject, AVCapturePhotoCaptur
     func photoOutput(_ output: AVCapturePhotoOutput,
                      didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         if let error {
-            print("[拍照-v6.7.24] 拍摄失败：\(error.localizedDescription)")
+            print("[拍照-v6.7.31] 拍摄失败：\(error.localizedDescription)")
             return
         }
         guard let data = photo.fileDataRepresentation() else { return }
@@ -330,18 +330,7 @@ final class CameraCaptureModel: NSObject, ObservableObject, AVCapturePhotoCaptur
             self.photos.append((data, takenAt))
             if let thumb { self.thumbnails.append(thumb) }
         }
-        // 同步写入系统相册（addOnly 权限，首次自动弹窗）——拒绝只影响留底，
-        // 不影响签到；失败在界面上留一句提示
-        PHPhotoLibrary.shared().performChanges({
-            let req = PHAssetCreationRequest.forAsset()
-            req.addResource(with: .photo, data: data, options: nil)
-        }) { ok, err in
-            if !ok {
-                print("[拍照-v6.7.24] 写入相册失败：\(err?.localizedDescription ?? "未知")（不影响签到）")
-                DispatchQueue.main.async {
-                    self.note = "照片未能写入相册（权限被拒？），签到不受影响"
-                }
-            }
-        }
+        // v6.7.31：不再写入系统相册（不污染照片库）；原图由照片签到管线
+        // 存进本场次文件夹，历史记录中可随时导出/分享
     }
 }

@@ -155,7 +155,7 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
     func setOrientationAngle(_ angle: CGFloat) {
         // v6.7.2：方向角变化时打一条日志，与方向自检行对照可一锤定音
         if angle != currentRotationAngle {
-            print("[相机-v6.7.24] 方向角 \(Int(currentRotationAngle)) → \(Int(angle))（90=竖屏 0/180=横屏 270=倒竖屏）")
+            print("[相机-v6.7.30] 方向角 \(Int(currentRotationAngle)) → \(Int(angle))（90=竖屏 0/180=横屏 270=倒竖屏）")
             currentRotationAngle = angle
             // v6.7.3：方向角变了，旧锁定作废，下一处理帧立即重新校准
             lockedOrientation = nil
@@ -217,7 +217,7 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
             let verdict = best.o == textbook
                 ? "与教科书映射一致"
                 : "⚠️与教科书映射不一致，以实测为准（本设备常态：画布与预览是两套转正常量）"
-            print("[相机-v6.7.24] 方向校准：\(summary) → 锁定 \(best.deg)°（\(verdict)）")
+            print("[相机-v6.7.30] 方向校准：\(summary) → 锁定 \(best.deg)°（\(verdict)）")
             // 锁定帧的画布转储：把"模型实际看到的画面"带回来核对（随照片签到分享带出）
             SCRFDDetector.sharedImport.armCanvasDump(tag: "相机_锁定\(best.deg)度")
             DispatchQueue.main.async { self.orientationLocked = true }
@@ -227,7 +227,7 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
         // 不再等 150 帧（v6.7.5 整场扫描都困在未锁定→教科书映射→画布颠倒→框错位）
         let backoff = best.n == 0 ? 45 : 30
         nextCalibFrame = frame + backoff
-        print("[相机-v6.7.24] 方向校准未定：\(summary)（连胜=\(calibWinStreak)）"
+        print("[相机-v6.7.30] 方向校准未定：\(summary)（连胜=\(calibWinStreak)）"
             + "→ 暂不发布人脸框，\(backoff)帧后重试")
         return textbook
     }
@@ -305,13 +305,13 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
             nextShadowFrame = frame + (gpuShadowChecks < 3 ? 20 : 300)
             if gpuShadowChecks == 3 { gpuVerdict = .validated }
             print(String(format:
-                "[相机-v6.7.24] 影子对拍#%d 通过：GPU %.0fms vs CPU %.0fms，召回 %.2f（%d/%d）关键点相对偏差 %.3f%@",
+                "[相机-v6.7.30] 影子对拍#%d 通过：GPU %.0fms vs CPU %.0fms，召回 %.2f（%d/%d）关键点相对偏差 %.3f%@",
                 gpuShadowChecks, gpuMs, cpuMs, recall, matched, c.count, medKps,
                 gpuShadowChecks == 3 ? " → GPU 通路转正，此后每300帧抽查" : ""))
         } else {
             gpuVerdict = .rejected
             print(String(format:
-                "[相机-v6.7.24] 影子对拍失败：召回 %.2f（%d/%d）关键点相对偏差 %.3f → GPU 数值不可信，永久回退 CPU 检测",
+                "[相机-v6.7.30] 影子对拍失败：召回 %.2f（%d/%d）关键点相对偏差 %.3f → GPU 数值不可信，永久回退 CPU 检测",
                 recall, matched, c.count, medKps))
         }
     }
@@ -375,7 +375,7 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
         if frame % 90 == 0 {   // 每 ~3 秒打一条，不刷屏
             let orientSrc = (lockedOrientation != nil && lockedAngle == angle)
                 ? "自校准锁定" : "教科书映射（未锁定，框已暂缓发布）"
-            print(String(format: "[相机-v6.7.24] %@检测耗时=%.0fms 检出%d脸 方向=%@",
+            print(String(format: "[相机-v6.7.30] %@检测耗时=%.0fms 检出%d脸 方向=%@",
                          useGPU ? "GPU" : "CPU", detMs, faces.count, orientSrc))
         }
 
@@ -445,7 +445,7 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
                     targetLock.unlock()
                     for (f, tid, boxSat) in chosen {
                         print(String(format:
-                            "[相机-v6.7.24] 识别目标→track%d 框=(%.0f,%.0f %.0fx%.0f) 检分=%.2f 框饱和=%.2f",
+                            "[相机-v6.7.30] 识别目标→track%d 框=(%.0f,%.0f %.0fx%.0f) 检分=%.2f 框饱和=%.2f",
                             tid, f.box.minX, f.box.minY, f.box.width, f.box.height,
                             f.score, boxSat))
                     }
@@ -492,14 +492,14 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
                                     let cos = FaceRecognizer.cosine(viaFull.vec, viaCrop.vec)
                                     Self.cropPathState = cos >= 0.98 ? 1 : 2
                                     print(String(format:
-                                        "[相机-v6.7.24] 裁剪直出对拍：全帧 vs 裁剪 特征余弦=%.4f → %@",
+                                        "[相机-v6.7.30] 裁剪直出对拍：全帧 vs 裁剪 特征余弦=%.4f → %@",
                                         cos, Self.cropPathState == 1
                                             ? "启用裁剪路径（此后每轮省 ~100ms）"
                                             : "回退全帧路径（正确性优先）"))
                                     feat = viaFull   // 校验轮采用旧路径结果（语义最保守）
                                 } else {
                                     Self.cropPathState = 2
-                                    print("[相机-v6.7.24] 裁剪直出对拍无法完成（旧路径嵌入失败）→ 回退全帧路径")
+                                    print("[相机-v6.7.30] 裁剪直出对拍无法完成（旧路径嵌入失败）→ 回退全帧路径")
                                 }
                             }
                             outs.append((job.tid, feat))
@@ -520,7 +520,7 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
                                     if r.attempts >= 2, r.frameRecognized < 0 {
                                         r.junk = true
                                         print(String(format:
-                                            "[相机-v6.7.24] track%d 判杂波（连续2次嵌入失败）——不再识别也不再显示",
+                                            "[相机-v6.7.30] track%d 判杂波（连续2次嵌入失败）——不再识别也不再显示",
                                             tid))
                                     }
                                     self.results[tid] = r
@@ -536,13 +536,13 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
                     // 看门狗：没有可选目标时给出原因拆解，定位识别停滞
                     let nSmall = faces.filter { $0.box.height < 48 }.count
                     print(String(format:
-                        "[相机-v6.7.24] 识别待机：本轮%d脸 合格0（杂波%d/已确认或试满%d/冷却%d/低饱和%d/太小%d）",
+                        "[相机-v6.7.30] 识别待机：本轮%d脸 合格0（杂波%d/已确认或试满%d/冷却%d/低饱和%d/太小%d）",
                         faces.count, nJunk, nDone, nCool, nLowSat, nSmall))
                 }
             } else if frame % 150 == 0 {
                 // 看门狗：识别占用长期不释放意味着回调链断裂
                 print(String(format:
-                    "[相机-v6.7.24] 识别看门狗：inFlight 持续占用（帧%d）——若反复出现说明识别回调丢失",
+                    "[相机-v6.7.30] 识别看门狗：inFlight 持续占用（帧%d）——若反复出现说明识别回调丢失",
                     frame))
             }
         }
@@ -582,7 +582,7 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
         let sat = FaceAligner.meanSaturation(pb)
         guard sat >= 0.15 else {
             print(String(format:
-                "[相机-v6.7.24] 饱和闸拦截：饱和=%.3f < 0.15 → 非人脸块（未跑 R50）", sat))
+                "[相机-v6.7.30] 饱和闸拦截：饱和=%.3f < 0.15 → 非人脸块（未跑 R50）", sat))
             return nil
         }
         guard let r = FaceRecognizer.shared.embedWithRawNorm(pb) else { return nil }
@@ -595,11 +595,11 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
             }
             let kpStr = kps.map { String(format: "(%.1f,%.1f)", $0.x, $0.y) }
                 .joined(separator: "|")
-            print(String(format: "[相机-v6.7.24] 识别#%d 范数=%.1f 饱和=%.2f kps=%@（对齐块已存）",
+            print(String(format: "[相机-v6.7.30] 识别#%d 范数=%.1f 饱和=%.2f kps=%@（对齐块已存）",
                          camCropDumps, r.rawNorm, sat, kpStr))
         }
         guard r.rawNorm >= 14 else {
-            print(String(format: "[相机-v6.7.24] 范数闸拦截：范数=%.1f < 14（饱和=%.2f）→ 判为非人脸块",
+            print(String(format: "[相机-v6.7.30] 范数闸拦截：范数=%.1f < 14（饱和=%.2f）→ 判为非人脸块",
                          r.rawNorm, sat))
             return nil
         }
@@ -701,7 +701,7 @@ final class AttendanceEngine: NSObject, ObservableObject, AVCaptureVideoDataOutp
             String(format: " 平均=%@ %.3f", students[$0.idx].name, $0.score)
         } ?? ""
         print(String(format:
-            "[相机-v6.7.24] track%d 尝试%d top1=%@ %.3f top2=%@ %.3f%@ → %@",
+            "[相机-v6.7.30] track%d 尝试%d top1=%@ %.3f top2=%@ %.3f%@ → %@",
             trackId, r.attempts, t1?.student.name ?? "-", t1?.score ?? 0,
             t2?.student.name ?? "-", t2?.score ?? 0, avgStr,
             yieldedTo > 0 ? "让出(与track\(yieldedTo)同一人，分低归并)"

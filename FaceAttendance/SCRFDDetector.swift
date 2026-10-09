@@ -100,9 +100,19 @@ nonisolated final class SCRFDDetector {
         } catch { loadError = "模型加载失败: \(error.localizedDescription)" }
     }
 
+    /// v6.7.31：调试转储总闸（默认关）——打开后才会把 SCRFD 画布、对齐块等
+    /// 诊断图存盘（照片签到页的「调试模式」开关写入同一键）。平时场次文件夹
+    /// 只保留 原图/标注图/Excel，历史记录干净；排查识别问题时打开即恢复
+    /// 全部诊断输出（控制台日志始终不受影响）
+    static var debugArtifactsEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "debugDumpEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "debugDumpEnabled") }
+    }
+
     /// 武装画布转储：下一次检测把"模型实际看到的画布"存到
     /// exports/SCRFD画布_<tag>.png——所见即模型所得，用于核对 letterbox 几何
     func armCanvasDump(tag: String) {
+        guard Self.debugArtifactsEnabled else { return }   // v6.7.31：总闸关闭时不武装
         dumpLock.lock()
         canvasDumpTag = tag
         dumpLock.unlock()
@@ -387,7 +397,7 @@ nonisolated final class SCRFDDetector {
         // 像素缓冲 → 归一化张量（全自控，不经 Core ML 图像输入的运行时转换）
         guard let tensor = PixelTensor.make(from: pb, size: detSize) else {
             debugStatus = "[v6.7] 输入张量构建失败"
-            print("[SCRFD-v6.7.24] \(debugStatus)")
+            print("[SCRFD-v6.7.30] \(debugStatus)")
             return []
         }
         let ts = PixelTensor.sampleStats(tensor)
@@ -406,7 +416,7 @@ nonisolated final class SCRFDDetector {
             inferMs = Date().timeIntervalSince(t0) * 1000
         } catch {
             debugStatus = "[v6.7] 推理执行失败: \(error.localizedDescription)"
-            print("[SCRFD-v6.7.24] \(debugStatus)")
+            print("[SCRFD-v6.7.30] \(debugStatus)")
             return []
         }
 
@@ -486,7 +496,7 @@ nonisolated final class SCRFDDetector {
             // 所有分数都低于阈值：报告各层最高分，判断是模型输出问题还是阈值问题
             var layerMax: [String] = []
             for d in sData { layerMax.append(String(format: "%.3f", d.max() ?? -1)) }
-            setDebug("[v6.7.24] 无超过阈值 \(threshold) 的候选；三层最高分=\(layerMax)；\(canvasInfo)；\(tensorInfo)；\(modelInfo)")
+            setDebug("[v6.7.30] 无超过阈值 \(threshold) 的候选；三层最高分=\(layerMax)；\(canvasInfo)；\(tensorInfo)；\(modelInfo)")
             return []
         }
         // 按分数降序 + NMS
@@ -546,7 +556,7 @@ nonisolated final class SCRFDDetector {
         let maxSide = min(contentW, contentH) * maxSideFactor
         let kept = faces.filter { Self.geometryOK($0, maxSide: maxSide) }
         let geoInfo = kept.count == faces.count ? "" : "；几何校验拦\(faces.count - kept.count)"
-        setDebug("[v6.7.24] 候选 \(allScores.count) 个，NMS 后 \(faces.count) 张脸，最高分 \(String(format: "%.3f", allScores.max() ?? 0))（输入 \(Int(contentW))x\(Int(contentH)) 缩放 \(String(format: "%.2f", scale))；推理=\(String(format: "%.0f", inferMs))ms\(rawInfo)；三层最高=\(layerMaxOK)\(orientInfo)\(geoInfo)；\(canvasInfo)；\(tensorInfo)；\(modelInfo)）")
+        setDebug("[v6.7.30] 候选 \(allScores.count) 个，NMS 后 \(faces.count) 张脸，最高分 \(String(format: "%.3f", allScores.max() ?? 0))（输入 \(Int(contentW))x\(Int(contentH)) 缩放 \(String(format: "%.2f", scale))；推理=\(String(format: "%.0f", inferMs))ms\(rawInfo)；三层最高=\(layerMaxOK)\(orientInfo)\(geoInfo)；\(canvasInfo)；\(tensorInfo)；\(modelInfo)）")
         return kept
     }
 
@@ -554,7 +564,7 @@ nonisolated final class SCRFDDetector {
     private func setDebug(_ msg: String) {
         if msg != debugStatus {
             debugStatus = msg
-            print("[SCRFD-v6.7.24] \(msg)")
+            print("[SCRFD-v6.7.30] \(msg)")
         } else {
             debugStatus = msg
         }

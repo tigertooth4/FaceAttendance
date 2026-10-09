@@ -177,7 +177,7 @@ nonisolated final class FaceRecognizer {
                 image.draw(in: CGRect(origin: .zero, size: image.size))
             }
             if let n = normalized.cgImage {
-                print(String(format: "[R50导入-v6.7.24] EXIF 方向=%d 已归一化 %dx%d → %dx%d",
+                print(String(format: "[R50导入-v6.7.30] EXIF 方向=%d 已归一化 %dx%d → %dx%d",
                              image.imageOrientation.rawValue, raw.width, raw.height, n.width, n.height))
                 cg0 = n
             }
@@ -196,7 +196,7 @@ nonisolated final class FaceRecognizer {
             if let up = Self.downsampled(cg0, width: Int(CGFloat(cg0.width) * s),
                                          height: Int(CGFloat(cg0.height) * s)) {
                 cg = up
-                print(String(format: "[R50导入-v6.7.24] 低分辨率照片 %dx%d → 放大 %dx%d 再检测",
+                print(String(format: "[R50导入-v6.7.30] 低分辨率照片 %dx%d → 放大 %dx%d 再检测",
                              cg0.width, cg0.height, cg.width, cg.height))
             }
         }

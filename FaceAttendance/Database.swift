@@ -40,7 +40,7 @@ final class Database {
         let cols = query("PRAGMA table_info(students)").compactMap { $0["name"] as? String }
         if !cols.contains("photo") {
             _ = exec("ALTER TABLE students ADD COLUMN photo BLOB")
-            print("[点名-v6.7.24] 旧库迁移：students 表已补 photo 列")
+            print("[点名-v6.7.30] 旧库迁移：students 表已补 photo 列")
         }
     }
 
@@ -102,14 +102,17 @@ final class Database {
 
     func listCourses() -> [Course] {
         query("""
-        SELECT c.id, c.name, c.created_at, COUNT(s.id) AS cnt
+        SELECT c.id, c.name, c.created_at, COUNT(s.id) AS cnt,
+               COUNT(s.feature) AS fcnt
         FROM courses c LEFT JOIN students s ON s.course_id = c.id
         GROUP BY c.id ORDER BY c.id DESC
         """).map { r in
             Course(id: r["id"] as! Int64,
                    name: r["name"] as! String,
                    createdAt: Date(timeIntervalSince1970: r["created_at"] as! Double),
-                   studentCount: Int(r["cnt"] as! Int64))
+                   studentCount: Int(r["cnt"] as! Int64),
+                   // v6.7.30：COUNT(列) 只数非 NULL 行——即已提取特征的人数
+                   featureCount: Int(r["fcnt"] as! Int64))
         }
     }
 
@@ -158,6 +161,18 @@ final class Database {
                            feature: feature,
                            photo: r["photo"] as? Data)
         }
+    }
+
+    /// v6.7.30：名册全量替换语义——删除本次名册之外的学生（旧名单残留）。
+    /// 旧实现重新导入只 upsert 不删除：从名册里删掉的学生永远留在库中，
+    /// 总人数停在旧人数不变。返回被移除者名单（结果提示用）。
+    @discardableResult
+    func deleteStudentsNotIn(courseId: Int64, keepIds: Set<String>) -> [String] {
+        let stale = students(courseId: courseId).filter { !keepIds.contains($0.studentId) }
+        for st in stale {
+            exec("DELETE FROM students WHERE id=?") { sqlite3_bind_int64($0, 1, st.id) }
+        }
+        return stale.map { "\($0.studentId) \($0.name)" }
     }
 
     func studentCount(courseId: Int64) -> Int {

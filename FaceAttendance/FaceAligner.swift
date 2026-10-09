@@ -230,6 +230,10 @@ nonisolated enum FaceAligner {
 
     static func dumpAlignedCrop(_ pb: CVPixelBuffer, tag: String,
                                 into destDir: URL? = nil) -> URL? {
+        // v6.7.31：调试转储总闸（与 SCRFDDetector.debugArtifactsEnabled 同键，
+        // 照片签到页「调试模式」开关控制）——关闭时所有对齐块转储直接为空操作，
+        // 场次文件夹只留 原图/标注图/Excel
+        guard SCRFDDetector.debugArtifactsEnabled else { return nil }
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }

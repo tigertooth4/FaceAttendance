@@ -70,17 +70,65 @@ final class AttendanceExporter {
             .appendingPathComponent(df.string(from: date))
     }
 
+    /// v6.9.0：手动补签——把当前行状态整表重写回【原 xlsx 文件】
+    /// （文件名与位置不变，"同一份 Excel"）。表头/时间/备注行沿用原表内容，
+    /// 仅重算"应到/实到/缺勤"汇总行与正文行（出勤/确认方式/识别次数/最高相似度）。
+    /// 行结构与 export() 完全一致（8 列：序号/学号/姓名/班级/出勤/确认方式/识别次数/最高相似度）
+    func rewriteSession(url: URL, title: String, timeText: String, note: String,
+                        rows: [(student: Student, present: Bool, method: String,
+                                hits: Int, score: Float)]) throws {
+        let total = rows.count
+        let present = rows.filter { $0.present }.count
+
+        var lines: [[(String, Style)]] = []
+        lines.append([(title, .header)])
+        lines.append([(timeText, .normal)])
+        lines.append([("应到：\(total) 人    实到：\(present) 人    缺勤：\(total - present) 人", .normal)])
+        if !note.isEmpty { lines.append([(note, .normal)]) }
+        lines.append([])
+        lines.append([("序号", .header), ("学号", .header), ("姓名", .header), ("班级", .header),
+                      ("出勤", .header), ("确认方式", .header), ("识别次数", .header), ("最高相似度", .header)])
+        for (i, r) in rows.enumerated() {
+            let style: Style = r.present ? (r.method == "待确认" ? .uncertain : .normal) : .absent
+            lines.append([(String(i + 1), style),
+                          (r.student.studentId, style),
+                          (r.student.name, style),
+                          (r.student.className, style),
+                          (r.present ? "√" : "缺勤", style),
+                          (r.present ? r.method : "", style),
+                          (r.present ? String(r.hits) : "", style),
+                          (r.present && r.score > 0 ? String(format: "%.3f", r.score) : "", style)])
+        }
+
+        let data = try buildXLSX(lines: lines)
+        try data.write(to: url, options: .atomic)   // 原子写：中途崩溃不会留下半个文件
+    }
+
     /// v6.7.19：个人签到表整表重建（源数据是签到目录里的 CSV，行数少，
     /// 每次确认后全量重写 xlsx，避免增量改 zip 的复杂度与损坏风险）。
     /// rows 每行固定 5 列：序号/学号/姓名/签到日期/签到时间
-    func rebuildPersonal(title: String, rows: [[String]], to url: URL) throws {
+    /// v6.7.30：个人签到表改为"全名单 + 签到打勾"格式——
+    /// 列出课程全部学生（序号/学号/姓名），签到的行填"√ 已签到"和签到时间，
+    /// 未签到的行保持空、整行标灰（.absent），一眼看出谁没来
+    /// - roster: 全部学生（名册顺序）；signed: 学号 → 签到时间
+    func rebuildPersonal(title: String, roster: [Student],
+                         signed: [String: String], to url: URL) throws {
         var lines: [[(String, Style)]] = []
         lines.append([(title, .header)])
-        lines.append([("共 \(rows.count) 人已签到", .normal)])
+        let present = roster.filter { signed[$0.studentId] != nil }.count
+        lines.append([("应到 \(roster.count) 人 · 实到 \(present) 人 · 未签到 \(roster.count - present) 人", .normal)])
         lines.append([])
         lines.append([("序号", .header), ("学号", .header), ("姓名", .header),
-                      ("签到日期", .header), ("签到时间", .header)])
-        for r in rows { lines.append(r.map { ($0, .normal) }) }
+                      ("签到状态", .header), ("签到时间", .header)])
+        for (i, st) in roster.enumerated() {
+            let t = signed[st.studentId]
+            let style: Style = t == nil ? .absent : .normal
+            lines.append([(String(i + 1), style),
+                          (st.studentId, style),
+                          (st.name, style),
+                          (t == nil ? "" : "√ 已签到", style),
+                          (t ?? "", style)])
+        }
         let data = try buildXLSX(lines: lines)
         try data.write(to: url, options: .atomic)
     }

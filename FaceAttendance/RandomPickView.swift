@@ -97,7 +97,7 @@ struct RandomPickView: View {
     private func reroll() {
         guard !candidates.isEmpty else { return }
         let p = candidates.randomElement()!   // 均匀分布，每次独立
-        print("[点名-v6.7.24] 抽中 \(p.studentId) \(p.name)（候选 \(candidates.count) 人）")
+        print("[点名-v6.7.30] 抽中 \(p.studentId) \(p.name)（候选 \(candidates.count) 人）")
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
             picked = p
         }

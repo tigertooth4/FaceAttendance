@@ -5,6 +5,8 @@ struct Course: Identifiable, Hashable, Sendable {
     var name: String
     var createdAt: Date
     var studentCount: Int = 0
+    /// v6.7.30：已提取人脸特征的人数——界面上的“总人数”以此为准
+    var featureCount: Int = 0
 }
 
 struct Student: Identifiable, Hashable, Sendable {
@@ -55,7 +57,7 @@ enum Thresholds {
     /// 构建，杜绝"拿旧构建测新修复"的乌龙（v6.7.13 教训：用户重导失败的
     /// 截图里日志标签仍是 [v6.7.12]，证明新包根本没被编译进去）。
     /// 每次发包必改，与日志标签同号。
-    static let buildVersion = "v6.7.24"
+    static let buildVersion = "v6.9.0"
 }
 
 /// 可分享的导出文件（包装 URL 以满足 sheet(item:) 的 Identifiable 要求）

@@ -4,10 +4,13 @@ import ImageIO
 
 /// 照片签到：上传多张班级照片 → 逐张检测/识别/标注 → 多照片融合 → 导出 Excel。
 /// 与实时扫描并行存在，共用同一套识别模型与阈值。
-/// v6.7.24：识别完成即【自动】保存 Excel 到场次文件夹（此前只在手动点
+/// v6.7.30：识别完成即【自动】保存 Excel 到场次文件夹（此前只在手动点
 /// "保存签到结果到 Excel"时才生成——与相机扫描的自动导出行为不一致，
 /// 不点按钮历史记录里就永远没有 Excel）；识别前打印库内区分度
 /// （mean/p99/max），一次性区分"特征库质量差"与"现场探针问题"。
+/// v6.7.31：场次文件夹默认只留 原图/标注图/Excel——SCRFD 画布与对齐块等
+/// 调试图不再默认存盘（总闸 SCRFDDetector.debugArtifactsEnabled，照片签到页
+/// 「调试模式」开关可临时打开排查问题）；拍照入口的照片也不再写系统相册。
 struct PhotoAttendanceView: View {
     let course: Course
     let students: [Student]
@@ -23,7 +26,7 @@ struct PhotoAttendanceView: View {
     @State private var exportedFile: ShareableFile?
     @State private var previewFile: ShareableFile?
     @State private var error: String?
-    /// v6.7.24：识别完成时自动保存的 Excel（场次文件夹内），
+    /// v6.7.30：识别完成时自动保存的 Excel（场次文件夹内），
     /// 手动点"保存签到结果到 Excel"直接分享它，不重复写盘
     @State private var autoSavedURL: URL?
     // v6.7.15：连拍相机入口
@@ -146,7 +149,8 @@ struct PhotoAttendanceView: View {
         }
     }
 
-    /// v6.7.15：拍照入口——连拍照片已在内存（拍摄时已写入系统相册），直接进识别
+    /// v6.7.15：拍照入口——连拍照片在内存（v6.7.31 起不再写系统相册，
+    /// 点「开始签到」后原图由下方管线存进本场次文件夹），直接进识别
     private func processCamera() {
         guard cameraRunToken > 0, !cameraPhotos.isEmpty, !processing else { return }
         guard pipelineAllowed() else { return }
@@ -156,7 +160,7 @@ struct PhotoAttendanceView: View {
         summary = nil
         autoSavedURL = nil
         let photos = cameraPhotos
-        print("[照片签到-v6.7.24] 拍照签到：\(photos.count) 张连拍照片进入识别")
+        print("[照片签到-v6.7.31] 拍照签到：\(photos.count) 张连拍照片进入识别（原图将存入场次文件夹）")
         Task { await runRecognition(photos: photos) }
     }
 
@@ -199,12 +203,12 @@ struct PhotoAttendanceView: View {
             annotated = result.annotated
             photoTime = result.earliest ?? Date()
             buildRows(fusion: result.fusion)
-            // v6.7.24：识别完成即自动保存 Excel 到场次文件夹（与相机扫描
+            // v6.7.30：识别完成即自动保存 Excel 到场次文件夹（与相机扫描
             // "完成签到"的自动导出行为一致），历史考勤记录立即可见；
             // 不再依赖用户记得点"保存签到结果到 Excel"
             if let url = saveExcel() {
                 autoSavedURL = url
-                print("[照片签到-v6.7.24] Excel 已自动保存到场次文件夹：\(url.lastPathComponent)")
+                print("[照片签到-v6.7.31] Excel 已自动保存到场次文件夹：\(url.lastPathComponent)")
             }
         }
     }
@@ -228,7 +232,7 @@ struct PhotoAttendanceView: View {
         summary = (confirmed, uncertain, absent)
     }
 
-    /// 纯写盘导出（v6.7.24 从 export 拆出）：识别收尾自动调用一次
+    /// 纯写盘导出（v6.7.30 从 export 拆出）：识别收尾自动调用一次
     @discardableResult
     private func saveExcel() -> URL? {
         guard let t = photoTime else { return nil }
@@ -267,7 +271,7 @@ struct PhotoAttendanceView: View {
     nonisolated static func recognizeAll(photos: [(data: Data, takenAt: Date?)],
                              students: [Student], courseName: String) -> ProcessResult {
         let gallery = students.map { $0.feature! }
-        // v6.7.24：库内区分度探针——两两余弦 mean/p99/max（83 人=3403 对，
+        // v6.7.30：库内区分度探针——两两余弦 mean/p99/max（83 人=3403 对，
         // 512 维余弦纯 CPU 毫秒级）。健康库 ≈0.10/0.30/0.40（v6.7.4 标定）；
         // mean 明显>0.2 或 max 逼近 0.8 = 特征库本身区分度差（小照片放大
         // 建库的典型特征）——现场识别率低/误识别的根因在库，不在探针
@@ -283,7 +287,7 @@ struct PhotoAttendanceView: View {
             let mean = pairs.reduce(0, +) / Float(pairs.count)
             let p99 = pairs[min(pairs.count - 1, Int(Float(pairs.count) * 0.99))]
             print(String(format:
-                "[照片签到-v6.7.24] 库内区分度：%d人 %d对 mean=%.3f p99=%.3f max=%.3f（健康≈0.10/0.30/0.40；mean>0.2=库质量差）",
+                "[照片签到-v6.7.31] 库内区分度：%d人 %d对 mean=%.3f p99=%.3f max=%.3f（健康≈0.10/0.30/0.40；mean>0.2=库质量差）",
                 gallery.count, pairs.count, mean, p99, pairs.last ?? 0))
         }
         var fusion: [String: (score: Float, hits: Int, ambiguous: Bool)] = [:]
@@ -348,7 +352,7 @@ struct PhotoAttendanceView: View {
                             moved += 1
                         }
                     }
-                    print("[照片签到-v6.7.24] 带出暂存诊断图 \(moved)/\(dumps.count) 个（已移入本场次文件夹，不再跨场累积）")
+                    print("[照片签到-v6.7.31] 带出暂存诊断图 \(moved)/\(dumps.count) 个（已移入本场次文件夹，不再跨场累积）")
                 }
             }
             guard let ui0 = UIImage(data: p.data),
@@ -411,7 +415,7 @@ struct PhotoAttendanceView: View {
                                 into: dir)
                         }
                         print(String(format:
-                            "[照片签到-v6.7.24] 照片%d 脸%d 检分=%.3f 饱和=%.3f < 0.15 → 杂波拦截（不参与比对，未跑 R50）",
+                            "[照片签到-v6.7.31] 照片%d 脸%d 检分=%.3f 饱和=%.3f < 0.15 → 杂波拦截（不参与比对，未跑 R50）",
                             idx + 1, fi + 1, det.score, sat))
                         continue
                     }
@@ -434,7 +438,7 @@ struct PhotoAttendanceView: View {
                                 into: dir)
                         }
                         print(String(format:
-                            "[照片签到-v6.7.24] 照片%d 脸%d 检分=%.3f 饱和=%.2f 范数=%.1f < 14 → 杂波拦截（不参与比对）",
+                            "[照片签到-v6.7.31] 照片%d 脸%d 检分=%.3f 饱和=%.2f 范数=%.1f < 14 → 杂波拦截（不参与比对）",
                             idx + 1, fi + 1, det.score, sat, r.rawNorm))
                         continue
                     }
@@ -458,7 +462,7 @@ struct PhotoAttendanceView: View {
                         }
                         if fi < 12 {
                             print(String(format:
-                                "[照片签到-v6.7.24] 照片%d 脸%d 检分=%.3f 饱和=%.2f 原始范数=%.1f top1=%@ %.3f top2=%@ %.3f gap=%.3f",
+                                "[照片签到-v6.7.31] 照片%d 脸%d 检分=%.3f 饱和=%.2f 原始范数=%.1f top1=%@ %.3f top2=%@ %.3f gap=%.3f",
                                 idx + 1, fi + 1, det.score, sat, r.rawNorm,
                                 students[top.0].name, top.1,
                                 scored.count >= 2 ? students[scored[1].0].name : "-",
@@ -469,7 +473,7 @@ struct PhotoAttendanceView: View {
                                 String(format: "(%.1f,%.1f)", $0.x, $0.y)
                             }.joined(separator: "|")
                             print(String(format:
-                                "[照片签到-v6.7.24] 照片%d 脸%d 框=(%.0f,%.0f %.0fx%.0f) kps=%@",
+                                "[照片签到-v6.7.31] 照片%d 脸%d 框=(%.0f,%.0f %.0fx%.0f) kps=%@",
                                 idx + 1, fi + 1, det.box.minX, det.box.minY,
                                 det.box.width, det.box.height, kpStr))
                         }
@@ -503,7 +507,7 @@ struct PhotoAttendanceView: View {
             let medNorm: Float = rawNorms.isEmpty ? 0 : rawNorms[rawNorms.count / 2]
             let confCnt = raw.filter { !$0.ambiguous && $0.score >= Thresholds.confirmed }.count
             print(String(format:
-                "[照片签到-v6.7.24] 照片%d：检测%d脸 识别%d人(≥0.30) 非歧义≥0.40共%d脸 最高相似度=%.3f 原始范数中位=%.1f（参考≈20.6）杂波拦截%d(饱和+范数) 检测耗时=%.0fms\n    检测状态：%@",
+                "[照片签到-v6.7.31] 照片%d：检测%d脸 识别%d人(≥0.30) 非歧义≥0.40共%d脸 最高相似度=%.3f 原始范数中位=%.1f（参考≈20.6）杂波拦截%d(饱和+范数) 检测耗时=%.0fms\n    检测状态：%@",
                 idx + 1, detections.count, matched.count, confCnt,
                 matched.map { $0.score }.max() ?? 0, medNorm, normFiltered, detMs,
                 SCRFDDetector.sharedImport.debugStatus))
@@ -570,7 +574,8 @@ struct PhotoAttendanceView: View {
         format.scale = 1
         let renderer = UIGraphicsImageRenderer(size: size, format: format)
         let lineWidth = max(4, size.width / 300)
-        let fontSize = max(16, size.width / 45)
+        // v6.7.30：标注字号减一档（/45 → /52，3000px 宽照片约 67pt → 58pt）
+        let fontSize = max(14, size.width / 52)
         return renderer.image { ctx in
             UIImage(cgImage: cg).draw(in: CGRect(origin: .zero, size: size))
             for h in hits {

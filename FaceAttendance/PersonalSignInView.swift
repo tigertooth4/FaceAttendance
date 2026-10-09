@@ -41,14 +41,16 @@ enum PersonalSignInStore {
     static func xlsxURL(_ dir: URL) -> URL { dir.appendingPathComponent("签到表.xlsx") }
 
     /// 新建签到目录：已存在同名同日期目录时直接复用（不清空历史数据）
-    static func createSession(courseName: String, name: String, date: Date) throws -> URL {
+    /// v6.7.30：roster = 课程全部学生（重建 xlsx 的全名单）
+    static func createSession(courseName: String, name: String, date: Date,
+                              roster: [Student]) throws -> URL {
         let dir = dirURL(courseName: courseName, name: name, date: date)
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         if !fm.fileExists(atPath: csvURL(dir).path) {
             try (header + "\n").write(to: csvURL(dir), atomically: true, encoding: .utf8)
-            try rebuildXLSX(dir: dir, title: titleText(name: name, date: date))
-            print("[个签-v6.7.24] 新建签到目录：\(dir.lastPathComponent)")
+            try rebuildXLSX(dir: dir, title: titleText(name: name, date: date), roster: roster)
+            print("[个签-v6.7.30] 新建签到目录：\(dir.lastPathComponent)")
         }
         return dir
     }
@@ -65,7 +67,8 @@ enum PersonalSignInStore {
     /// 追加一行并重建 xlsx，返回新行序号
     @discardableResult
     static func append(dir: URL, name: String, sessionDate: Date,
-                       studentId: String, studentName: String) throws -> Int {
+                       studentId: String, studentName: String,
+                       roster: [Student]) throws -> Int {
         let rows = loadRows(dir: dir)
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd"
@@ -77,8 +80,9 @@ enum PersonalSignInStore {
         handle.seekToEndOfFile()
         handle.write(Data((row.csvLine + "\n").utf8))
         try handle.close()
-        try rebuildXLSX(dir: dir, title: titleText(name: name, date: sessionDate))
-        print("[个签-v6.7.24] 签到写入 #\(row.seq) \(studentId) \(studentName) \(row.date) \(row.time)")
+        try rebuildXLSX(dir: dir, title: titleText(name: name, date: sessionDate),
+                        roster: roster)
+        print("[个签-v6.7.30] 签到写入 #\(row.seq) \(studentId) \(studentName) \(row.date) \(row.time)")
         return row.seq
     }
 
@@ -88,12 +92,16 @@ enum PersonalSignInStore {
         return "\(name)  签到表（\(df.string(from: date))）"
     }
 
-    private static func rebuildXLSX(dir: URL, title: String) throws {
+    private static func rebuildXLSX(dir: URL, title: String, roster: [Student]) throws {
+        // v6.7.30：CSV 只存已签到的行，转成 学号→签到时间 的字典喂给全名单重建
+        var signed: [String: String] = [:]
+        for r in loadRows(dir: dir) { signed[r.studentId] = r.time }
         try AttendanceExporter().rebuildPersonal(
-            title: title, rows: loadRows(dir: dir).map { $0.cells }, to: xlsxURL(dir))
+            title: title, roster: roster, signed: signed, to: xlsxURL(dir))
     }
 
-    /// 课程下全部签到目录（按目录名倒序，最新在前）
+    /// 课程下全部签到目录——v6.7.30 起按签到日期新→旧排（尾缀 _yyyy-MM-dd 解析；
+    /// 解析不到用目录修改时间兜底），同一天内按名字倒序
     static func listSessions(courseName: String) -> [(dir: URL, count: Int)] {
         let base = baseDir(courseName: courseName)
         let fm = FileManager.default
@@ -103,7 +111,20 @@ enum PersonalSignInStore {
             return fm.fileExists(atPath: $0.path, isDirectory: &isDir) && isDir.boolValue
         }
         .map { (dir: $0, count: loadRows(dir: $0).count) }
-        .sorted { $0.dir.lastPathComponent > $1.dir.lastPathComponent }
+        .sorted {
+            let da = Self.sessionDate($0.dir) ?? .distantPast
+            let db = Self.sessionDate($1.dir) ?? .distantPast
+            if da != db { return da > db }
+            return $0.dir.lastPathComponent > $1.dir.lastPathComponent
+        }
+    }
+
+    /// 目录名尾缀（最后一个下划线之后）按 yyyy-MM-dd 解析；失败用修改时间兜底
+    private static func sessionDate(_ dir: URL) -> Date? {
+        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
+        let tail = dir.lastPathComponent.split(separator: "_").last.map(String.init) ?? ""
+        if let d = df.date(from: tail) { return d }
+        return (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 }
 
@@ -177,7 +198,9 @@ struct PersonalSignInListView: View {
             .toolbar { Button("完成") { dismiss() } }
             .onAppear(perform: reload)
             .sheet(isPresented: $showNew) { newSessionSheet }
-            .fullScreenCover(item: $active) { s in
+            // v6.7.30：签到返回后刷新已签到人数——.onAppear 在 sheet 覆盖期间
+            // 不重触发，原来返回时目录行下方的"已签到 N 人"停在进入前的数字
+            .fullScreenCover(item: $active, onDismiss: reload) { s in
                 PersonalSignInCameraView(session: s, course: course, students: students)
             }
             .sheet(item: $shareFile) { f in ShareSheet(items: [f.url]) }
@@ -206,11 +229,14 @@ struct PersonalSignInListView: View {
                         let name = newName.trimmingCharacters(in: .whitespaces)
                         guard !name.isEmpty else { return }
                         do {
+                            // v6.7.30：带课程名册，新格式签到表需要全名单
+                            // （实参顺序必须与声明一致——本版首个编译错误即参数顺序反了）
                             let dir = try PersonalSignInStore.createSession(
-                                courseName: course.name, name: name, date: newDate)
-                            print("[个签-v6.7.24] 签到目录就绪：\(dir.path)")
+                                courseName: course.name, name: name, date: newDate,
+                                roster: students)
+                            print("[个签-v6.7.30] 签到目录就绪：\(dir.path)")
                         } catch {
-                            print("[个签-v6.7.24] 创建签到目录失败：\(error.localizedDescription)")
+                            print("[个签-v6.7.30] 创建签到目录失败：\(error.localizedDescription)")
                         }
                         newName = ""
                         newDate = Date()
@@ -235,6 +261,8 @@ struct PersonalSignInCameraView: View {
     let students: [Student]
     @StateObject private var engine: PersonalSignInEngine
     @Environment(\.dismiss) private var dismiss
+    /// v6.8.1：手动签到（头像网格自领）页面开关
+    @State private var showManualSign = false
 
     init(session: PersonalSignInListView.ActiveSession, course: Course, students: [Student]) {
         self.session = session
@@ -314,12 +342,28 @@ struct PersonalSignInCameraView: View {
                 .tint(engine.confirmEnabled ? .green : .gray)
                 .disabled(!engine.confirmEnabled)
                 .padding(.top, 10)
+
+                // v6.8.1：识别失败/无法确认时的兜底入口——手动签到（头像网格自领）。
+                // 与确认签到按钮互补：识别成功（确认可点）时禁用本按钮，防止
+                // 已刷脸者再手动重复签/代签；识别不出（确认灰掉）时启用
+                Button { showManualSign = true } label: {
+                    Label("手动签到", systemImage: "person.crop.circle.badge.questionmark")
+                        .font(.subheadline.bold())
+                        .padding(.horizontal, 26).padding(.vertical, 10)
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .disabled(engine.confirmEnabled)
+                .padding(.top, 8)
                 .padding(.bottom, 34)
             }
         }
         .animation(.spring(response: 0.3), value: engine.justSigned)
         .onAppear { engine.start() }
         .onDisappear { engine.stop() }
+        .fullScreenCover(isPresented: $showManualSign) {
+            ManualSignInGridView(engine: engine, students: students)
+        }
     }
 
     private var boxColor: Color {
@@ -344,6 +388,147 @@ struct PersonalSignInCameraView: View {
                       y: offY + r.minY * scale,
                       width: r.width * scale,
                       height: r.height * scale)
+    }
+}
+
+// MARK: - v6.8.1 手动签到（识别失败兜底）：头像网格自领
+
+/// 头像列表页：按名册顺序列出全部选课学生，每排 3 人（头像在上、姓名在下），
+/// 可上下滑动翻页。学生找到自己的头像 → 点一下头像 → 头像中部浮出
+/// 「确认签到」按钮 → 点确认即完成签到（落盘路径与刷脸签到完全一致：
+/// 追加同一份 CSV、重建同一份 签到表.xlsx，该行打「√ 已签到」+ 签到时间），
+/// 顶部横幅提示签到成功后自动返回人脸识别页。
+/// 点错头像：直接滑动离开（不点确认不会签），或点另一个头像——选中态
+/// 只有一份，旧位置的确认按钮自动消失、浮到新头像中部。
+struct ManualSignInGridView: View {
+    let engine: PersonalSignInEngine
+    let students: [Student]
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Student?
+    @State private var banner: String?
+    @State private var bannerOK = false
+
+    private let columns = [GridItem(.flexible(), spacing: 14),
+                           GridItem(.flexible(), spacing: 14),
+                           GridItem(.flexible(), spacing: 14)]
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color(.systemGroupedBackground).ignoresSafeArea()
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 18) {
+                        ForEach(students) { s in
+                            cell(s)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 16)
+                }
+            }
+            .navigationTitle("手动签到 · 找到自己的头像")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("返回") { dismiss() }
+                }
+            }
+            .overlay(alignment: .top) {
+                if let banner {
+                    Text(banner)
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18).padding(.vertical, 10)
+                        .background(bannerOK ? Color.green : Color.red, in: Capsule())
+                        .shadow(radius: 6)
+                        .padding(.top, 6)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+        }
+        .animation(.spring(response: 0.3), value: banner)
+    }
+
+    private func cell(_ s: Student) -> some View {
+        let signed = engine.isSigned(s.studentId)
+        return VStack(spacing: 6) {
+            ZStack {
+                avatar(s)
+                if signed {
+                    // 本场次已签到的学生：头像压暗 + √ 标记，不能再选（防重复签到）
+                    VStack(spacing: 2) {
+                        Image(systemName: "checkmark.circle.fill").font(.title)
+                        Text("已签到").font(.caption.bold())
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.black.opacity(0.45))
+                }
+                if selected?.id == s.id {
+                    Button { confirm(s) } label: {
+                        Text("确认签到")
+                            .font(.callout.bold())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            .background(.green, in: Capsule())
+                            .shadow(radius: 5)
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .aspectRatio(1, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(selected?.id == s.id ? Color.green : .clear, lineWidth: 3)
+            )
+            Text(s.name)
+                .font(.subheadline.bold())
+                .foregroundStyle(signed ? .secondary : .primary)
+                .lineLimit(1)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // 选中态唯一：点新头像时旧头像上的确认按钮随选中转移自动消失
+            withAnimation(.spring(response: 0.25)) {
+                selected = signed ? nil : s
+            }
+        }
+    }
+
+    /// 头像：优先名册证件照缩略图（v6.7.18 起入库）；旧数据无照片时用姓名首字占位
+    private func avatar(_ s: Student) -> some View {
+        Group {
+            if let data = s.photo, let img = UIImage(data: data) {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    Color(.secondarySystemFill)
+                    Text(String(s.name.prefix(1)))
+                        .font(.largeTitle.bold())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// 点头像中部的「确认签到」：与刷脸签到同一落盘路径（同一 CSV → 同一签到表.xlsx）
+    private func confirm(_ s: Student) {
+        do {
+            try engine.manualSign(s)
+            bannerOK = true
+            banner = "✓ \(s.name) 签到成功"
+            selected = nil
+            // 短暂展示成功后返回人脸识别页（相机页还有 engine.justSigned 横幅接力提示）
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { dismiss() }
+        } catch {
+            bannerOK = false
+            banner = error.localizedDescription
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { banner = nil }
     }
 }
 
@@ -424,9 +609,16 @@ final class PersonalSignInEngine: NSObject, ObservableObject,
     private let videoQueue = DispatchQueue(label: "personal.signin.video")
     private let students: [Student]
     private let gallery: [(idx: Int, feat: [Float])]
-    private let sessionDir: URL
-    private let sessionName: String
-    private let sessionDate: Date
+    // v6.9.0：补签模式下不绑定个人签到目录（sessionDir 等为 nil，
+    // 落盘由 onCommit 接管）；个人签到入口仍走原 CSV 路径
+    private let sessionDir: URL?
+    private let sessionName: String?
+    private let sessionDate: Date?
+
+    /// v6.9.0：手动补签接管器——非 nil 时 commit 不再写个人签到 CSV/xlsx，
+    /// 改由调用方负责把该学生写回原考勤表（闭包参数：学生、本次识别相似度）。
+    /// 个人签到流程不设置，行为与旧版完全一致。
+    var onCommit: ((Student, Float) throws -> Void)?
 
     // —— 发布到界面（主线程写）——
     @Published private(set) var faceBox: CGRect?      // 正立未镜像像素坐标
@@ -483,6 +675,24 @@ final class PersonalSignInEngine: NSObject, ObservableObject,
         signedCount = rows.count
     }
 
+    /// v6.9.0：补签引擎——不绑定个人签到目录。alreadySigned 用于初始化
+    /// 已签到集合（本场次已出勤的学生不再重复补签，扫到也只提示"已签到"）；
+    /// 每次提交由 onCommit 接管（写回原考勤表 xlsx）
+    init(students: [Student], alreadySigned: Set<String>,
+         onCommit: @escaping (Student, Float) throws -> Void) {
+        self.students = students
+        self.gallery = students.enumerated().compactMap { i, s in
+            s.feature.map { (idx: i, feat: $0) }
+        }
+        self.sessionDir = nil
+        self.sessionName = nil
+        self.sessionDate = nil
+        self.onCommit = onCommit
+        super.init()
+        signedSids = alreadySigned
+        signedCount = alreadySigned.count
+    }
+
     func setOrientationAngle(_ angle: CGFloat) {
         if angle != currentAngle { lockedOri = nil; lockedAngle = -1 }  // v6.7.20：方向变了重校
         currentAngle = angle
@@ -519,7 +729,7 @@ final class PersonalSignInEngine: NSObject, ObservableObject,
             // 与扫描签到同一约定：数据输出连接不设旋转/镜像，缓冲保持传感器原生方向
             self.session.commitConfiguration()
             self.session.startRunning()
-            print("[个签-v6.7.24] 前置相机已启动：\(self.sessionName)，候选 \(self.gallery.count) 人")
+            print("[个签-v6.7.30] 前置相机已启动：\(self.sessionName ?? "手动补签")，候选 \(self.gallery.count) 人")
         }
     }
 
@@ -527,25 +737,65 @@ final class PersonalSignInEngine: NSObject, ObservableObject,
         videoQueue.async { [weak self] in self?.session.stopRunning() }
     }
 
-    /// 点"确认签到"：追加一行 CSV 并重建 xlsx
+    /// 点"确认签到"（刷脸识别成功时）：追加一行 CSV 并重建 xlsx
     func confirm() {
         guard confirmEnabled, let s = matched else { return }
-        do {
-            let seq = try PersonalSignInStore.append(
-                dir: sessionDir, name: sessionName, sessionDate: sessionDate,
-                studentId: s.studentId, studentName: s.name)
+        do { try commit(s) } catch {
+            note = "写入失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// v6.8.1：手动签到（头像网格自领）——与刷脸签到完全同一落盘路径：
+    /// 追加同一份 CSV、重建同一份 签到表.xlsx（该行打「√ 已签到」+ 时间）。
+    /// 已签到过的学号抛错，由头像网格页以横幅提示，不产生重复行。
+    func manualSign(_ s: Student) throws {
+        guard !signedSids.contains(s.studentId) else {
+            throw NSError(domain: "PersonalSignIn", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "\(s.name) 已签到过"])
+        }
+        try commit(s)
+    }
+
+    /// v6.8.1：头像网格页用——该学号本场次是否已签到（已签到的头像打「已签到」遮罩）
+    func isSigned(_ studentId: String) -> Bool { signedSids.contains(studentId) }
+
+    /// 刷脸签到与手动签到共用的落盘提交
+    private func commit(_ s: Student) throws {
+        // v6.9.0：补签模式——提交动作由调用方接管（写回原考勤表 xlsx），
+        // 其余状态维护（已签到集合/计数/横幅）与刷脸路径保持一致
+        if let onCommit {
+            try onCommit(s, matchedScore)
             signedSids.insert(s.studentId)
             lastConfirmedSid = s.studentId
             signedCount += 1
-            justSigned = "✓ \(s.name) 已签到（第 \(seq) 人）"
+            justSigned = "✓ \(s.name) 补签成功"
             confirmEnabled = false
             confirmTitle = "已签到"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 self?.justSigned = nil
             }
-        } catch {
-            note = "写入失败：\(error.localizedDescription)"
+            print(String(format: "[补签-v6.9.0] 扫脸补签 %@ %@（相似度 %.3f）",
+                         s.studentId, s.name, matchedScore))
+            return
         }
+        guard let sessionDir, let sessionName, let sessionDate else {
+            throw NSError(domain: "PersonalSignIn", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "签到目录未绑定，无法写入"])
+        }
+        let seq = try PersonalSignInStore.append(
+            dir: sessionDir, name: sessionName, sessionDate: sessionDate,
+            studentId: s.studentId, studentName: s.name,
+            roster: students)
+        signedSids.insert(s.studentId)
+        lastConfirmedSid = s.studentId
+        signedCount += 1
+        justSigned = "✓ \(s.name) 已签到（第 \(seq) 人）"
+        confirmEnabled = false
+        confirmTitle = "已签到"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.justSigned = nil
+        }
+        print("[个签-v6.8.1] 签到写入 #\(seq) \(s.studentId) \(s.name)（刷脸/手动共用路径）")
     }
 
     // MARK: - 视频帧处理（videoQueue，检测约 0.5s/次，自然节流约 2Hz）
@@ -640,16 +890,16 @@ final class PersonalSignInEngine: NSObject, ObservableObject,
                 if fr.best - best > 0.12 { flipWins += 1; normWins = 0 }
                 else if best - fr.best > 0.12 { normWins += 1; flipWins = 0 }
                 print(String(format:
-                    "[个签-v6.7.24] 镜像探针：正向=%.3f 翻转=%.3f（翻连胜=%d 正连胜=%d）",
+                    "[个签-v6.7.30] 镜像探针：正向=%.3f 翻转=%.3f（翻连胜=%d 正连胜=%d）",
                     best, fr.best, flipWins, normWins))
                 if flipWins >= 3 {
                     flipLocked = true
                     ema = []; emaFrames = 0
                     DispatchQueue.main.async { self.displayFlipX = false }
-                    print("[个签-v6.7.24] 镜像校准锁定：缓冲为镜像画面 → 识别改用翻转块")
+                    print("[个签-v6.7.30] 镜像校准锁定：缓冲为镜像画面 → 识别改用翻转块")
                 } else if normWins >= 3 {
                     flipLocked = false
-                    print("[个签-v6.7.24] 镜像校准锁定：缓冲为正立真像")
+                    print("[个签-v6.7.30] 镜像校准锁定：缓冲为正立真像")
                 }
             }
         }
@@ -661,7 +911,7 @@ final class PersonalSignInEngine: NSObject, ObservableObject,
             best >= Thresholds.confirmed && !ambiguous ? .confirmed :
             best >= Thresholds.uncertain ? .uncertain : .unknown
         let ms = (CACurrentMediaTime() - t0) * 1000
-        print(String(format: "[个签-v6.7.24] 检测=%.0fms 总=%.0fms 脸=%dx%d top1=%@ %.3f %@",
+        print(String(format: "[个签-v6.7.30] 检测=%.0fms 总=%.0fms 脸=%dx%d top1=%@ %.3f %@",
                      detMs, ms, Int(f.box.width), Int(f.box.height),
                      stu?.name ?? "—", best, lvl.thresholdText))
 
@@ -735,9 +985,9 @@ final class PersonalSignInEngine: NSObject, ObservableObject,
         if decisive || calibWinStreak >= 2 {
             lockedOri = best.o
             lockedAngle = angle
-            print("[个签-v6.7.24] 方向校准：\(summary) → 锁定 \(best.deg)°")
+            print("[个签-v6.7.30] 方向校准：\(summary) → 锁定 \(best.deg)°")
         } else {
-            print("[个签-v6.7.24] 方向校准未定：\(summary)（连胜=\(calibWinStreak)）")
+            print("[个签-v6.7.30] 方向校准未定：\(summary)（连胜=\(calibWinStreak)）")
         }
         return (best.faces.isEmpty ? AttendanceEngine.orientation(for: angle) : best.o,
                 best.faces, best.cg)
@@ -788,7 +1038,7 @@ final class PersonalSignInEngine: NSObject, ObservableObject,
                 fz[i].kps = fz[i].kps.map { CGPoint(x: ($0.x - ox) * z, y: ($0.y - oy) * z) }
             }
             lastGoodZoom = z
-            print("[个签-v6.7.24] 大脸量程兜底：zoom\(Int(z)) 检出 \(fz.count) 脸（zoom1 无检出）")
+            print("[个签-v6.7.30] 大脸量程兜底：zoom\(Int(z)) 检出 \(fz.count) 脸（zoom1 无检出）")
             return fz
         }
         lastGoodZoom = 0
@@ -820,7 +1070,7 @@ final class PersonalSignInEngine: NSObject, ObservableObject,
         let sat = FaceAligner.meanSaturation(pb112)
         guard sat >= 0.15, let r = FaceRecognizer.shared.embedWithRawNorm(pb112),
               r.rawNorm >= 14 else {
-            print(String(format: "[个签-v6.7.24] 闸拦截：饱和/范数未过（饱和=%.2f）", sat))
+            print(String(format: "[个签-v6.7.30] 闸拦截：饱和/范数未过（饱和=%.2f）", sat))
             return nil
         }
         return r.vec
